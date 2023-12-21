@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 
 	gar "cloud.google.com/go/artifactregistry/apiv1"
@@ -16,10 +15,11 @@ import (
 )
 
 var (
-	project  = flag.StringP("project", "p", "", "Project containing the Google Artifact Registry")
-	location = flag.StringP("location", "l", "", "Location of the Google Artifact Registry")
-	repo     = flag.StringP("repo", "r", "", "Repository containing the Docker images")
-	format   = flag.StringP("format", "f", "gib", "Output format: bytes, kib, kb, mib, mb, gib, gb")
+	project       = flag.StringP("project", "p", "", "Project containing the Google Artifact Registry")
+	location      = flag.StringP("location", "l", "", "Location of the Google Artifact Registry")
+	repo          = flag.StringP("repo", "r", "", "Repository containing the Docker images")
+	format        = flag.StringP("format", "f", "gib", "Output format: bytes, kib, kb, mib, mb, gib, gb")
+	summarizeOnly = flag.BoolP("summarize", "s", true, "Summarize size by image. Disable to print all images digests' sizes individually")
 
 	// optional filter
 	includeTagFilter   = flag.StringP("include-tags", "i", "", "Include only tags matching the regex")
@@ -114,22 +114,16 @@ func main() {
 		}
 
 		imageStats[name] += int64(img.GetImageSizeBytes())
-	}
 
-	var stats []image
-	for name, size := range imageStats {
-		stats = append(stats, image{name, size})
+		if !*summarizeOnly {
+			fmt.Printf("%s\t%s\n", printUnits(int64(img.GetImageSizeBytes())), img.GetUri())
+		}
 	}
-
-	// sort by size, largest first
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].size > stats[j].size
-	})
 
 	tot := int64(0)
-	for _, img := range stats {
-		tot += int64(img.size)
-		fmt.Printf("%-12s\t%s\n", printUnits(img.size), img.name)
+	for name, size := range imageStats {
+		tot += int64(size)
+		fmt.Printf("%-12s\t%s\n", printUnits(size), name)
 	}
 	fmt.Printf("%-12s\t.\n", printUnits(tot))
 }
