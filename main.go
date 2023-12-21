@@ -2,23 +2,30 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
 	gar "cloud.google.com/go/artifactregistry/apiv1"
 	garproto "cloud.google.com/go/artifactregistry/apiv1/artifactregistrypb"
+	flag "github.com/spf13/pflag"
 	"google.golang.org/api/iterator"
 )
 
 var (
-	project  = flag.String("project", "", "Project containing the Google Artifact Registry")
-	location = flag.String("location", "", "Location of the Google Artifact Registry")
-	repo     = flag.String("repo", "", "Repository containing the Docker images")
-	format   = flag.String("format", "gib", "Output format: bytes, kib, kb, mib, mb, gib, gb")
+	project  = flag.StringP("project", "p", "", "Project containing the Google Artifact Registry")
+	location = flag.StringP("location", "l", "", "Location of the Google Artifact Registry")
+	repo     = flag.StringP("repo", "r", "", "Repository containing the Docker images")
+	format   = flag.StringP("format", "f", "gib", "Output format: bytes, kib, kb, mib, mb, gib, gb")
+
+	// optional filter
+	includeTagFilter   = flag.StringP("include-tags", "i", "", "Include only tags matching the regex")
+	excludeTagFilter   = flag.StringP("exclude-tags", "e", "", "Exclude tags matching the regex")
+	includeImageFilter = flag.StringP("include-images", "I", "", "Include only images matching the regex")
+	excludeImageFilter = flag.StringP("exclude-images", "E", "", "Exclude images matching the regex")
 )
 
 type image struct {
@@ -33,6 +40,37 @@ func main() {
 		log.Fatal("-project, -location and -repo must be set")
 	}
 
+	var err error
+	var includeTagRegex *regexp.Regexp
+	var excludeTagRegex *regexp.Regexp
+	var includeImageRegex *regexp.Regexp
+	var excludeImageRegex *regexp.Regexp
+
+	if *includeTagFilter != "" {
+		includeTagRegex, err = regexp.Compile(*includeTagFilter)
+		if err != nil {
+			log.Fatalf("Error parsing --include-tags regex: %q: %s", *includeTagFilter, err)
+		}
+	}
+	if *excludeTagFilter != "" {
+		excludeTagRegex, err = regexp.Compile(*excludeTagFilter)
+		if err != nil {
+			log.Fatalf("Error parsing --exclude-tags regex: %q: %s", *excludeTagFilter, err)
+		}
+	}
+	if *includeImageFilter != "" {
+		includeImageRegex, err = regexp.Compile(*includeImageFilter)
+		if err != nil {
+			log.Fatalf("Error parsing --include-images regex: %q: %s", *includeImageFilter, err)
+		}
+	}
+	if *excludeImageFilter != "" {
+		excludeImageRegex, err = regexp.Compile(*excludeImageFilter)
+		if err != nil {
+			log.Fatalf("Error parsing --exclude-images regex: %q: %s", *excludeImageFilter, err)
+		}
+	}
+
 	repoId := fmt.Sprintf("projects/%s/locations/%s/repositories/%s", *project, *location, *repo)
 	fmt.Fprintf(os.Stderr, "Analyzing %s ...\n", repoId)
 
@@ -45,8 +83,7 @@ func main() {
 	}
 	defer client.Close()
 
-	req := &garproto.ListDockerImagesRequest{Parent: repoId}
-	images := client.ListDockerImages(ctx, req)
+	images := client.ListDockerImages(ctx, &garproto.ListDockerImagesRequest{Parent: repoId})
 
 	imageStats := make(map[string]int64)
 	for {
@@ -59,6 +96,23 @@ func main() {
 		}
 
 		name := strings.Split(img.GetUri(), "@")[0]
+
+		// image filters
+		if includeImageRegex != nil && !includeImageRegex.MatchString(name) {
+			continue
+		}
+		if excludeImageRegex != nil && excludeImageRegex.MatchString(name) {
+			continue
+		}
+
+		// tag filters
+		if includeTagRegex != nil && !matchesAnyTag(img.GetTags(), includeTagRegex) {
+			continue
+		}
+		if excludeTagRegex != nil && matchesAnyTag(img.GetTags(), excludeTagRegex) {
+			continue
+		}
+
 		imageStats[name] += int64(img.GetImageSizeBytes())
 	}
 
@@ -121,4 +175,13 @@ func toGB(bytes int64) float64 {
 
 func toGiB(bytes int64) float64 {
 	return float64(bytes) / (1 << 30) // 1 GiB = 2^30 bytes
+}
+
+func matchesAnyTag(tags []string, regex *regexp.Regexp) bool {
+	for _, tag := range tags {
+		if regex.MatchString(tag) {
+			return true
+		}
+	}
+	return false
 }
